@@ -32,10 +32,10 @@ public class CargoAgent extends Agent {
     private Phase phase = Phase.STAGE1;
     private Placement current;
 
-    private int seq, retries, notBefore, repairUntil, windowAcks, swapRounds, expected, replies, swapExpected, swapReplies;
+    private int windowRetries, seq, retries, notBefore, repairUntil, windowAcks, swapRounds, expected, replies, swapExpected, swapReplies;
     private boolean afterRepair, blocked;
     private long nextCheck, deadlineTs, retryAt, replanAt, stage2At, swapLockUntil;
-    private String convId, swapPartnerId;
+    private String convId, swapPartnerId, swapPartnerWagon;
     private AID swapLockAid;
     private final Map<AID, TransportOffer> offers = new LinkedHashMap<>();
     private final Map<AID, SwapOffer> swapOffers = new LinkedHashMap<>();
@@ -123,7 +123,7 @@ public class CargoAgent extends Agent {
         if (!Objects.equals(m.getConversationId(), convId)) return;     // устаревший диалог
         switch (m.getPerformative()) {
             case ACLMessage.PROPOSE -> { if (st == St.SEARCH) { offers.put(m.getSender(), Msg.get(m, TransportOffer.class)); replies++; } }
-            case ACLMessage.REFUSE -> { if (st == St.SEARCH) { replies++; if ("BLOCKED".equals(m.getContent())) blocked = true; } }
+            case ACLMessage.REFUSE -> { if (st == St.SEARCH) { replies++; if ("BLOCKED".equals(m.getContent()) || "CONFLICT".equals(m.getContent())) blocked = true; } }
             case ACLMessage.INFORM -> {
                 if (st == St.BOOKING) { current = Msg.get(m, Placement.class); st = St.WINDOWS; bookWindows(); }
             }
@@ -170,7 +170,7 @@ public class CargoAgent extends Agent {
     // ===================== Окна станций =====================
 
     private void bookWindows() {
-        windowAcks = 0;
+        windowAcks = 0; windowRetries = 0;
         sendStation(current.from(), new WindowRequest(spec.id, "LOAD", current.loadWindow()));
         sendStation(current.to(), new WindowRequest(spec.id, "UNLOAD", current.unloadWindow()));
     }
@@ -186,11 +186,27 @@ public class CargoAgent extends Agent {
     }
 
     private void onWindow(ACLMessage m) {
-        if (m.getPerformative() == ACLMessage.FAILURE) log("окно станции не подтверждено (TODO: взять альтернативу)");
-        else if (m.getPerformative() != ACLMessage.INFORM) return;
+        if (m.getPerformative() == ACLMessage.FAILURE) {
+            WindowAlt alt = Msg.tryGet(m, WindowAlt.class);
+            if (alt != null && st == St.WINDOWS && windowRetries++ < 3 && (alt.kind().equals("UNLOAD") || alt.slot().from() >= info.readyMin())) {
+                current = withWindow(alt);                                   // берём альтернативное окно
+                sendStation(alt.kind().equals("LOAD") ? current.from() : current.to(), new WindowRequest(spec.id, alt.kind(), alt.slot()));
+                log("окно " + alt.kind() + " занято, пробую " + alt.slot());
+                return;
+            }
+            log("окно станции не подтверждено");
+            report("окно станции не подтверждено");
+        } else if (m.getPerformative() != ACLMessage.INFORM) return;
         if (++windowAcks < 2) return;
         if (st == St.WINDOWS) placed();
         else if (st == St.SWAP_EXEC) swapFinished();
+    }
+
+    private Placement withWindow(WindowAlt a) {
+        Placement c = current;
+        return new Placement(c.cargoId(), c.wagonId(), c.locoId(), c.from(), c.to(), c.trip(), c.arrive(), c.lateMin(), c.baseCost(),
+                c.penalty(), c.grossT(), c.cleaning(), a.kind().equals("LOAD") ? a.slot() : c.loadWindow(),
+                a.kind().equals("UNLOAD") ? a.slot() : c.unloadWindow());
     }
 
     private void placed() {
@@ -231,7 +247,8 @@ public class CargoAgent extends Agent {
                 Placement rp = q.requesterPlacement();
                 boolean locked = swapLockAid != null && now < swapLockUntil && !swapLockAid.equals(m.getSender());
                 if (st != St.PLACED || current == null || locked) { swapRefuse(r, "busy"); return; }
-                if (!rp.wagonId().equals(current.wagonId()) && !cfg.settings.allowCrossWagonSwap) { swapRefuse(r, "cross-wagon TODO"); return; }
+                if (!rp.wagonId().equals(current.wagonId()) && !cfg.settings.allowCrossWagonSwap) { swapRefuse(r, "cross-wagon off"); return; }
+                if (!q.requester().from().equals(info.from()) || !q.requester().to().equals(info.to())) { swapRefuse(r, "other route"); return; }
                 int newArrive = rp.trip().from() + (current.arrive() - current.trip().from());   // если возьму слот просящего
                 int newLate = Math.max(0, newArrive - info.deadlineMin());
                 if (newLate > current.lateMin()) { swapRefuse(r, "no slack"); return; }          // условия не ухудшаются
@@ -261,7 +278,7 @@ public class CargoAgent extends Agent {
                 x.setProtocol(Msg.P_SWAP_EXEC);
                 x.setConversationId(convId);
                 x.addReceiver(Df.find(this, Msg.SVC_WAGON, current.wagonId()));
-                Msg.put(x, new SwapExec(spec.id, swapPartnerId));
+                Msg.put(x, new SwapExec(spec.id, swapPartnerId, swapPartnerWagon));
                 send(x);
                 st = St.SWAP_EXEC;
             }
@@ -275,7 +292,7 @@ public class CargoAgent extends Agent {
 
     private void decideSwap() {
         if (st != St.SWAP_QUERY) return;
-        AID best = null; double bestGain = 1e-6;
+        AID best = null; double bestGain = Math.max(1e-6, cfg.settings.epsilon * current.cost());   // улучшение должно быть > ε
         for (Map.Entry<AID, SwapOffer> e : swapOffers.entrySet()) {
             Placement p = e.getValue().placement();
             int newLate = Math.max(0, p.arrive() - info.deadlineMin());
@@ -292,6 +309,7 @@ public class CargoAgent extends Agent {
             send(r);
         }
         swapPartnerId = swapOffers.get(best).cargoId();
+        swapPartnerWagon = swapOffers.get(best).placement().wagonId();
         st = St.SWAP_WAIT;
         log("выбран обмен с " + swapPartnerId + ", выгода " + bestGain);
     }
@@ -305,7 +323,7 @@ public class CargoAgent extends Agent {
         }
         if (m.getPerformative() != ACLMessage.INFORM) return;
         SwapDone d = Msg.get(m, SwapDone.class);
-        boolean iAmRequester = d.requester().cargoId().equals(spec.id);
+        boolean iAmRequester = d.requester() != null && d.requester().cargoId().equals(spec.id);
         current = iAmRequester ? d.requester() : d.partner();
         phase = Phase.STAGE2;
         swapLockAid = null;
@@ -333,6 +351,7 @@ public class CargoAgent extends Agent {
     private void onBreakdown(ACLMessage m) {
         Breakdown b = Msg.get(m, Breakdown.class);
         if (current == null || !current.wagonId().equals(b.wagonId())) return;   // TODO: отказ во время обмена/бронирования
+        swapLockAid = null; stage2At = 0;                    // прерываем обмен/ребалансировку, если шли
         int slack = info.deadlineMin() - current.arrive();
         repairUntil = b.repairUntil();
         current = null;

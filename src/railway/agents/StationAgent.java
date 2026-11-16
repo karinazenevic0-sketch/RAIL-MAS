@@ -29,12 +29,12 @@ public class StationAgent extends Agent {
             @Override public void action() {
                 ACLMessage m = receive();
                 if (m == null) { block(); return; }
-                if (Msg.P_WINDOW.equals(m.getProtocol()) && m.getPerformative() == ACLMessage.REQUEST) handle(m);
+                if (Msg.P_WINDOW.equals(m.getProtocol()) && m.getPerformative() == ACLMessage.REQUEST) handleMessage(m);
             }
         });
     }
 
-    private void handle(ACLMessage m) {
+    private void handleMessage(ACLMessage m) {
         Object o = Msg.get(m, Object.class);
         ACLMessage rep = m.createReply();
         if (o instanceof WindowRequest r) {
@@ -45,7 +45,7 @@ public class StationAgent extends Agent {
             } else {
                 if (old != null) wins.add(old);
                 rep.setPerformative(ACLMessage.FAILURE);
-                Msg.put(rep, nextFree(r.slot())); // альтернатива
+                Msg.put(rep, new WindowAlt(r.kind(), alternative(r.kind(), r.slot()))); // альтернатива
             }
         } else if (o instanceof WindowSwap s) {   // обмен окон двух грузов одной операцией
             Win a = get(s.ownerA(), s.kind()), b = get(s.ownerB(), s.kind());
@@ -71,6 +71,16 @@ public class StationAgent extends Agent {
     }
 
     private boolean free(Slot s) { return wins.stream().filter(w -> w.slot().overlaps(s)).count() < me.capacity; }
+
+    /** Погрузка должна закончиться до отправления – ищем РАНЬШЕ; приём можно сдвинуть ПОЗЖЕ. */
+    private Slot alternative(String kind, Slot s) {
+        int dir = kind.equals("LOAD") ? -1 : 1;
+        for (int i = 1; i <= 12; i++) {
+            Slot x = new Slot(s.from() + dir * 60 * i, s.to() + dir * 60 * i);
+            if (free(x)) return x;
+        }
+        return s;
+    }
 
     private Slot nextFree(Slot s) {
         for (int i = 1; i <= 24; i++) {

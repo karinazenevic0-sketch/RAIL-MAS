@@ -4,7 +4,7 @@
     "negotiationTimeoutMs": 3000, "holdTtlMs": 5000,
     "stage2DelayMs": 6000, "quietMs": 5000, "replanMsPerSlackHour": 300,
     "maxRetries": 3, "maxSwapRounds": 3, "epsilon": 0.05,
-    "allowCrossWagonSwap": false
+    "allowCrossWagonSwap": true
   },
   "costs": { "emptyKmRate": 0.75, "latePerHour": 25 },
   "stations": [

@@ -29,12 +29,12 @@ public class LocomotiveAgent extends Agent {
             @Override public void action() {
                 ACLMessage m = receive();
                 if (m == null) { block(); return; }
-                handle(m);
+                handleMessage(m);
             }
         });
     }
 
-    private void handle(ACLMessage m) {
+    private void handleMessage(ACLMessage m) {
         String p = m.getProtocol();
         if (p == null) return;
         if (p.equals(Msg.P_TRACTION) && m.getPerformative() == ACLMessage.CFP) {

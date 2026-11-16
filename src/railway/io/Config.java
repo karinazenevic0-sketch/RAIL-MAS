@@ -16,6 +16,7 @@ import java.util.Map;
 public class Config {
 
     public static class Settings {
+        public int dayStartMin = 360;    // момент, когда все вагоны стоят на домашних станциях
         public int prepMin = 120;        // от готовности груза до отправления (подача + погрузка)
         public int loadMin = 60;         // окно погрузки / длительность погрузки
         public int unloadMin = 60;       // окно приёма
@@ -23,12 +24,13 @@ public class Config {
         public long negotiationTimeoutMs = 3000;
         public long holdTtlMs = 5000;    // время жизни временной блокировки интервала у вагона
         public long stage2DelayMs = 6000;// пауза перед ребалансировкой у груза с опозданием
+        public long repairAfterMs = 15000; // через сколько мс (реального времени) вагон снова исправен
         public long quietMs = 5000;      // «тишина», после которой координатор сохраняет план
         public long replanMsPerSlackHour = 300; // срочные грузы после отказа ищут замену раньше
         public int maxRetries = 3;
         public int maxSwapRounds = 3;
         public double epsilon = 0.05;    // порог относительного улучшения (доля) для принятия плана
-        public boolean allowCrossWagonSwap = false; // TODO: обмен между разными вагонами
+        public boolean allowCrossWagonSwap = true;  // обмен рейсами между разными вагонами
     }
 
     public static class Costs {
